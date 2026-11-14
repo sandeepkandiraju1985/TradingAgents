@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     report_path TEXT,
     error TEXT,
     stats TEXT,
+    progress TEXT,
     created REAL NOT NULL,
     started REAL,
     finished REAL
@@ -94,7 +95,8 @@ DEFAULT_WATCHLISTS = [
     ("US tech", "^GSPC", ["NVDA", "MSFT", "AAPL", "GOOGL", "AMZN"]),
 ]
 
-_ANALYSIS_FIELDS = {"status", "rating", "summary", "report_path", "error", "stats", "started", "finished"}
+_ANALYSIS_FIELDS = {"status", "rating", "summary", "report_path", "error", "stats", "progress", "started", "finished"}
+_JSON_FIELDS = ("stats", "progress")
 _EPS = 1e-9
 
 
@@ -108,6 +110,10 @@ class Store:
         self._db.row_factory = sqlite3.Row
         with self._lock:
             self._db.executescript(SCHEMA)
+            # Databases from before the agent view lack the progress column.
+            cols = {r["name"] for r in self._db.execute("PRAGMA table_info(analyses)")}
+            if "progress" not in cols:
+                self._db.execute("ALTER TABLE analyses ADD COLUMN progress TEXT")
             self._db.commit()
             if not self._all("SELECT id FROM watchlists LIMIT 1"):
                 for name, bench, symbols in DEFAULT_WATCHLISTS:
@@ -173,7 +179,8 @@ class Store:
     def _an(row: dict | None) -> dict | None:
         if row is not None:
             row["analysts"] = json.loads(row["analysts"])
-            row["stats"] = json.loads(row["stats"]) if row["stats"] else None
+            for f in _JSON_FIELDS:
+                row[f] = json.loads(row[f]) if row.get(f) else None
         return row
 
     def create_analysis(self, symbol: str, trade_date: str, analysts: list[str]) -> int:
@@ -185,8 +192,9 @@ class Store:
         bad = set(fields) - _ANALYSIS_FIELDS
         if bad:
             raise ValueError(f"unknown analysis fields: {sorted(bad)}")
-        if "stats" in fields and fields["stats"] is not None:
-            fields["stats"] = json.dumps(fields["stats"])
+        for f in _JSON_FIELDS:
+            if fields.get(f) is not None:
+                fields[f] = json.dumps(fields[f])
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._run(f"UPDATE analyses SET {cols} WHERE id = ?", (*fields.values(), aid))
 

@@ -29,7 +29,9 @@ def main() -> None:
     from .server import create_app
     from .store import Store
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # One line per agent step from the console; libraries only report problems.
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("console").setLevel(logging.INFO)
     db = args.db or os.path.join(Path.home(), ".tradingagents", "console.db")
     console = Console(Store(db))
     console.start_monitor()

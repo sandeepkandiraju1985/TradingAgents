@@ -37,7 +37,7 @@ class FakeMarket:
 
 
 def fake_runner(rating, summary="Rating: x\nStrong quarter, rising estimates."):
-    def run(symbol, trade_date, analysts, held):
+    def run(symbol, trade_date, analysts, held, on_progress=None):
         run.calls.append((symbol, trade_date, tuple(analysts), held))
         return {"rating": rating, "summary": summary, "report_path": None,
                 "stats": {"llm_calls": 3, "seconds": 1.0}}
@@ -147,7 +147,7 @@ def test_hold_rating_proposes_nothing(store):
 
 
 def test_failed_run_is_recorded_on_the_analysis(store):
-    def boom(*a):
+    def boom(*a, **k):
         raise TimeoutError("model did not answer")
     c = Console(store, market=FakeMarket({"TCS.NS": 1.0}), runner=boom)
     aid = store.create_analysis("TCS.NS", "2026-11-13", ["market"])

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from . import rules
 from .engine import Conflict, Console, NotFound
 from .market import MarketDataError
+from .progress import Progress
 
 STATIC = Path(__file__).parent / "static"
 SYMBOL_RE = re.compile(r"^\^?[A-Z0-9][A-Z0-9.\-=&]{0,19}$")
@@ -106,7 +107,7 @@ def create_app(console: Console) -> FastAPI:
             "positions": book["open"],
             "closed": book["closed"][:30],
             "proposals": store.proposals(limit=40),
-            "analyses": store.analyses(limit=30),
+            "analyses": [{**a, "progress": Progress.summary(a.get("progress"))} for a in store.analyses(limit=30)],
             "orders": store.orders(limit=60),
             "events": store.events(limit=40),
         }
@@ -195,6 +196,24 @@ def create_app(console: Console) -> FastAPI:
             raise HTTPException(400, "Trade date must look like 2026-11-14.") from exc
         aid = console.submit_analysis(sym, trade_date, analysts)
         return store.analysis(aid)
+
+    @app.get("/api/analyses/{aid}")
+    def analysis(aid: int):
+        a = store.analysis(aid)
+        if a is None:
+            raise HTTPException(404, "No such analysis.")
+        a["proposals"] = [p for p in store.proposals(limit=200) if p["analysis_id"] == aid]
+        a["now"] = time.time()
+        return a
+
+    @app.post("/api/analyses/{aid}/cancel")
+    def cancel(aid: int):
+        try:
+            return console.cancel(aid)
+        except NotFound as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/analyses/{aid}/report")
     def report(aid: int):

@@ -12,6 +12,7 @@
     <div class="brand">Trading<b>Agents</b></div>
     <nav aria-label="Sections">
       <a href="#analyze">Analyze</a>
+      <a href="#agents">Agent view</a>
       <a href="#positions">Positions</a>
       <a href="#charts">Charts</a>
       <a href="#watchlists">Watchlists</a>
@@ -101,6 +102,17 @@
         <div class="ytable" id="ytable" hidden></div>
         <p class="fine" id="perfNote">Equal amounts in each stock, bought at the start of the range. Drag to pan, scroll to zoom. Past returns don't predict future returns.</p>
       </div>
+    </section>
+
+    <section class="card" id="agents" aria-label="Agent view">
+      <div class="cardhead">
+        <div class="avhead"><h2>Agent view</h2><span id="avTitle" class="muted"></span><span id="avStatus"></span></div>
+        <div class="actions" id="avActions"></div>
+      </div>
+      <p class="empty" id="avEmpty">Run an analysis, or pick one under Recent analyses, to watch the agents work.</p>
+      <ol class="pipeline" id="avPipe" aria-label="Agent pipeline"></ol>
+      <div id="avDecision"></div>
+      <div id="avSteps"></div>
     </section>
 
     <section class="card" id="scanCard" aria-label="Scan results">

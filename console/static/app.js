@@ -107,6 +107,14 @@
       S.data = await api("/api/state");
       renderAll();
       if (!S.booted) boot2();
+      const list = S.data.analyses;
+      if (S.avId === null && list.length) {
+        const pick = list.find(function (a) { return a.status === "running"; }) || list[0];
+        selectAnalysis(pick.id, false);
+      } else if (S.av) {
+        const row = list.find(function (a) { return a.id === S.avId; });
+        if (row && row.status !== S.av.status) loadAgentView();
+      }
     } catch (e) {
       toast("Couldn't reach the console: " + e.message, true);
     }
@@ -125,11 +133,18 @@
     if (!list.length) { const tr = el("tr"), td = el("td", "empty", "No analyses yet. Run one above, or flag stocks with Scan now."); td.colSpan = 4; tr.appendChild(td); body.appendChild(tr); }
     list.forEach(function (a) {
       const tr = el("tr");
-      const td1 = el("td"); td1.appendChild(symButton(a.symbol)); td1.appendChild(el("small", "", dayOf(a.trade_date))); tr.appendChild(td1);
+      tr.setAttribute("aria-current", String(a.id === S.avId));
+      tr.title = "Show this analysis in the agent view";
+      tr.addEventListener("click", function () { selectAnalysis(a.id, true); });
+      const td1 = el("td"); td1.appendChild(el("strong", "", short(a.symbol))); td1.appendChild(el("small", "", dayOf(a.trade_date))); tr.appendChild(td1);
       const td2 = el("td");
       if (a.status === "done") td2.appendChild(el("span", "rating " + String(a.rating || "review").toLowerCase(), a.rating || "REVIEW"));
-      else if (a.status === "running") td2.appendChild(el("span", "rating running", "Running " + dur(S.data.now - a.started)));
+      else if (a.status === "running") {
+        td2.appendChild(el("span", "rating running", "Running " + dur(S.data.now - a.started)));
+        if (a.progress && a.progress.current) td2.appendChild(el("span", "stage", a.progress.current));
+      }
       else if (a.status === "queued") td2.appendChild(el("span", "rating queued", "Queued"));
+      else if (a.status === "cancelled") td2.appendChild(el("span", "rating cancelled", "Cancelled"));
       else { td2.appendChild(el("span", "rating failed", "Failed")); td2.appendChild(el("small", "", (a.error || "").slice(0, 160))); }
       tr.appendChild(td2);
       const st = a.stats || {};
@@ -160,11 +175,193 @@
     busy(btn, true, "Starting…");
     try {
       const a = await api("/api/analyses", { method: "POST", body: JSON.stringify({ symbol: $("aSym").value, trade_date: $("aDate").value, analysts: analysts }) });
-      toast("Analysis of " + a.symbol + " queued. It takes several minutes.");
-      refresh();
+      toast("Analysis of " + a.symbol + " queued. Watch the agents work in the agent view.");
+      await refresh();
+      selectAnalysis(a.id, true);
     } catch (err) { toast(err.message, true); }
     busy(btn, false);
   });
+
+  /* ---------- agent view ---------- */
+  S.avId = null; S.av = null; S.avSig = ""; S.avOpen = {}; S.avStopping = {};
+  let avTimer;
+  const ANALYST_KEYS = ["market", "social", "news", "fundamentals"];
+  const SPEAKER = { Bull: "bull", Bear: "bear", Aggressive: "aggressive", Conservative: "conservative", Neutral: "neutral" };
+
+  // Agents write Markdown. Render the common parts as DOM nodes; never as HTML.
+  function inline(parent, text) {
+    text.split(/(\*\*[^*]+\*\*)/).forEach(function (part) {
+      if (!part) return;
+      if (/^\*\*[^*]+\*\*$/.test(part)) parent.appendChild(el("strong", "", part.slice(2, -2)));
+      else parent.appendChild(document.createTextNode(part));
+    });
+  }
+  function md(text) {
+    const root = el("div", "md");
+    let list = null, table = null, para = null;
+    (text || "").split(/\r?\n/).forEach(function (raw) {
+      const line = raw.replace(/\s+$/, "");
+      let m;
+      if (/^\s*\|.*\|$/.test(line)) {
+        list = para = null;
+        if (/^\s*\|(\s*:?-+:?\s*\|)+$/.test(line)) return;   // header separator row
+        if (!table) { const wrap = el("div", "tblwrap"); table = el("table"); wrap.appendChild(table); root.appendChild(wrap); }
+        const tr = el("tr"), head = table.rows.length === 0;
+        line.trim().replace(/^\||\|$/g, "").split("|").forEach(function (c) { const cell = el(head ? "th" : "td"); inline(cell, c.trim()); tr.appendChild(cell); });
+        table.appendChild(tr);
+        return;
+      }
+      table = null;
+      if (!line.trim() || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { list = para = null; return; }
+      if ((m = line.match(/^\s*#{1,6}\s+(.*)$/))) { const h = el("h4"); inline(h, m[1]); root.appendChild(h); list = para = null; return; }
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/), numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        const tag = numbered ? "OL" : "UL";
+        if (!list || list.tagName !== tag) { list = el(tag.toLowerCase()); root.appendChild(list); }
+        const li = el("li"); inline(li, (bullet || numbered)[1]); list.appendChild(li); para = null;
+        return;
+      }
+      list = null;
+      if (!para) { para = el("p"); root.appendChild(para); } else para.appendChild(document.createElement("br"));
+      inline(para, line.trim());
+    });
+    return root;
+  }
+
+  function selectAnalysis(id, scroll) {
+    if (S.avId !== id) { S.avSig = ""; S.avOpen = {}; }
+    S.avId = id;
+    loadAgentView();
+    if (S.data) renderAnalyses();
+    if (scroll) $("agents").scrollIntoView({ block: "start" });
+  }
+  async function loadAgentView() {
+    clearTimeout(avTimer);
+    if (S.avId === null) return;
+    const id = S.avId;
+    try {
+      const a = await api("/api/analyses/" + id);
+      if (S.avId !== id) return;
+      S.av = a;
+      renderAgentView();
+      if (a.status === "running" || a.status === "queued") avTimer = setTimeout(loadAgentView, 4000);
+    } catch (e) {
+      $("avEmpty").hidden = false; $("avEmpty").textContent = "Couldn't load this analysis: " + e.message;
+    }
+  }
+  function stepTime(s) {
+    if (s.status === "done") return s.seconds !== undefined ? dur(s.seconds) : "done";
+    return s.status === "working" ? "working…" : s.status;
+  }
+  function openStep(key) {
+    S.avOpen[key] = true;
+    const d = $("avSteps").querySelector('details[data-key="' + key + '"]');
+    if (d) { d.open = true; d.scrollIntoView({ block: "start" }); }
+  }
+  async function decide(p, verb) {
+    try {
+      if (verb === "approve") { const o = await api("/api/proposals/" + p.id + "/approve", { method: "POST", body: "{}" }); toast("Approved. Dry-run " + o.side + " of " + o.qty + " " + o.symbol + " recorded at " + money(o.price, o.currency) + "."); }
+      else { await api("/api/proposals/" + p.id + "/reject", { method: "POST", body: "{}" }); toast("Rejected."); }
+    } catch (e) { toast(e.message, true); }
+    S.avSig = ""; await refresh(); loadAgentView();
+  }
+  function renderAgentView() {
+    const a = S.av; if (!a) return;
+    $("avEmpty").hidden = true;
+    $("avTitle").textContent = short(a.symbol) + " · " + dayOf(a.trade_date) + " · " + a.analysts.length + (a.analysts.length === 1 ? " analyst" : " analysts");
+    const st = $("avStatus"); st.textContent = "";
+    const label = a.status === "done" ? (a.rating || "REVIEW") : a.status === "running" ? "Running " + dur(a.now - a.started) : a.status.charAt(0).toUpperCase() + a.status.slice(1);
+    st.appendChild(el("span", "rating " + (a.status === "done" ? String(a.rating || "review").toLowerCase() : a.status), label));
+    if (a.status === "done" && a.stats) st.appendChild(el("span", "muted", " " + dur(a.stats.seconds) + " · " + (a.stats.llm_calls ?? "–") + " LLM calls"));
+
+    const act = $("avActions"); act.textContent = "";
+    if (a.status === "running" || a.status === "queued") {
+      const stopping = S.avStopping[a.id];
+      const c = el("button", "btn small no", stopping ? "Stopping…" : "Cancel"); c.type = "button"; c.disabled = !!stopping;
+      c.title = a.status === "running" ? "Stops when the agent that is working now finishes" : "Removes it from the queue";
+      c.addEventListener("click", async function () {
+        c.disabled = true;
+        try {
+          await api("/api/analyses/" + a.id + "/cancel", { method: "POST", body: "{}" });
+          if (a.status === "running") { S.avStopping[a.id] = true; toast("Stopping after the agent that is working now finishes."); } else toast("Cancelled.");
+        } catch (e) { toast(e.message, true); }
+        S.avSig = ""; refresh(); loadAgentView();
+      });
+      act.appendChild(c);
+    }
+    if (a.report_path) { const r = el("a", "btn small", "Full report"); r.href = "/api/analyses/" + a.id + "/report"; r.target = "_blank"; r.rel = "noopener"; act.appendChild(r); }
+
+    const sig = JSON.stringify([a.status, a.progress, a.proposals.map(function (p) { return p.status; }), a.error]);
+    if (sig === S.avSig) return;   // nothing new: keep the page (and the reader's place) as it is
+    S.avSig = sig;
+
+    const P = a.progress, pipe = $("avPipe"), steps = $("avSteps"), dec = $("avDecision");
+    pipe.textContent = ""; steps.textContent = ""; dec.textContent = "";
+    if (a.status === "failed" || a.status === "cancelled") {
+      const box = el("div", "decision"); box.appendChild(el("span", "bigrating rating " + a.status, a.status === "failed" ? "Failed" : "Cancelled"));
+      const right = el("div"); right.appendChild(el("p", "", a.error || "")); box.appendChild(right); dec.appendChild(box);
+    }
+    if (!P) { if (a.status === "queued") pipe.appendChild(el("li", "muted", "Waiting for the analysis ahead of it to finish.")); return; }
+
+    P.steps.forEach(function (s, i) {
+      if (i > 0 && ANALYST_KEYS.indexOf(s.key) < 0) { const sep = el("li", "pipe-sep", "›"); sep.setAttribute("aria-hidden", "true"); pipe.appendChild(sep); }
+      const li = el("li", "pipe " + s.status), dot = el("span", "dot");
+      li.appendChild(dot); li.appendChild(document.createTextNode(s.label)); li.appendChild(el("small", "", stepTime(s)));
+      if (s.status !== "skipped") { li.tabIndex = 0; li.addEventListener("click", function () { openStep(s.key); }); li.addEventListener("keydown", function (e) { if (e.key === "Enter") openStep(s.key); }); }
+      pipe.appendChild(li);
+    });
+
+    const pm = P.steps.find(function (s) { return s.key === "portfolio_manager"; });
+    if (a.status === "done") {
+      const box = el("div", "decision");
+      box.appendChild(el("span", "bigrating rating " + String(a.rating || "review").toLowerCase(), a.rating || "REVIEW"));
+      const right = el("div");
+      right.appendChild(el("div", "who", "Portfolio manager's decision"));
+      const text = pm && pm.text ? pm.text : (a.summary || "");
+      right.appendChild(md(text.length > 900 ? text.slice(0, 900).replace(/\s+\S*$/, "") + " …" : text));
+      const p = a.proposals[0];
+      const row = el("div", "actions");
+      if (p && p.status === "pending") {
+        row.appendChild(el("span", "", "Proposed: "));
+        row.lastChild.appendChild(el("span", "side " + p.side.toLowerCase(), p.side));
+        row.appendChild(el("span", "num", p.qty + " " + short(p.symbol) + " @ " + money(p.price, p.currency)));
+        const ok = el("button", "btn ok small", "Approve"), no = el("button", "btn no small", "Reject");
+        ok.type = no.type = "button";
+        ok.addEventListener("click", function () { ok.disabled = no.disabled = true; decide(p, "approve"); });
+        no.addEventListener("click", function () { ok.disabled = no.disabled = true; decide(p, "reject"); });
+        row.appendChild(ok); row.appendChild(no);
+      } else if (p) {
+        row.appendChild(el("span", "muted", p.side + " " + p.qty + " " + short(p.symbol) + ": " + p.status + "."));
+      } else {
+        row.appendChild(el("span", "muted", "No trade proposed for this rating."));
+      }
+      right.appendChild(row);
+      box.appendChild(right);
+      dec.appendChild(box);
+    }
+
+    P.steps.forEach(function (s) {
+      if (s.status === "skipped") return;
+      const d = el("details", "avstep"); d.dataset.key = s.key;
+      d.open = !!S.avOpen[s.key];
+      d.addEventListener("toggle", function () { S.avOpen[s.key] = d.open; });
+      const sum = el("summary");
+      sum.appendChild(el("span", "sdot " + s.status));
+      sum.appendChild(document.createTextNode(s.label));
+      sum.appendChild(el("small", "", stepTime(s)));
+      d.appendChild(sum);
+      const body = el("div", "avbody");
+      if (s.turns && s.turns.length) {
+        s.turns.forEach(function (t) { const b = el("div", "turn " + (SPEAKER[t.speaker] || "neutral")); b.appendChild(el("div", "who", t.speaker)); b.appendChild(md(t.text)); body.appendChild(b); });
+      } else if (s.text) {
+        body.appendChild(md(s.text));
+      } else {
+        body.appendChild(el("p", "empty", s.status === "working" ? "Working on it. The output appears here when this agent finishes." : "Waits for the agents before it."));
+      }
+      d.appendChild(body);
+      steps.appendChild(d);
+    });
+  }
 
   /* ---------- scan ---------- */
   function renderScan() {
