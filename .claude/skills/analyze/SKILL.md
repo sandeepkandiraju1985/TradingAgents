@@ -37,7 +37,7 @@ Every sub-agent prompt you write includes: `RUN_DIR`, `PY` (the full command), t
 
 After each numbered step, run `PY -m claude_harness record RUN_DIR` so the console shows progress, and check the expected files exist. If an agent did not write its file, run it once more; if it fails again, stop and tell the user what failed.
 
-1. **Analysts, in parallel**: start every selected analyst in a single message (one Agent call each): `ta-market-analyst` (market.md), `ta-sentiment-analyst` (sentiment.md), `ta-news-analyst` (news.md), `ta-fundamentals-analyst` (fundamentals.md). If the analysts report that the data tools fail for network reasons, stop and tell the user: the run needs internet access to Yahoo Finance and the other data sources.
+1. **Analysts, in parallel**: start every selected analyst in a single message (one Agent call each): `ta-market-analyst` (market.md), `ta-sentiment-analyst` (sentiment.md), `ta-news-analyst` (news.md), `ta-fundamentals-analyst` (fundamentals.md). If a data tool fails, the analysts fall back to the web (WebSearch) for a run on the latest trading day, and mark those figures "(source: web)". For a past analysis date there is no web fallback. If an analyst reports that neither its tools nor the web gave it data, stop and tell the user what was missing.
 2. **Bull vs Bear**: for each round N = 1..rounds: `ta-bull-researcher`, then `ta-bear-researcher`, one after the other (each reads the other's turn).
 3. **Research manager**: `ta-research-manager` writes plan.md.
 4. **Trader**: `ta-trader` writes trader.md.
@@ -56,6 +56,7 @@ Then reply to the user with:
 - the **rating** and, in three to five bullets, the reasons from decision.md;
 - the key levels (entry, stop, target) if the decision gives them;
 - the proposal (side, quantity, price) and that it waits for their approval in the console's Approvals; or that no trade was proposed and why;
-- the run time and the path of the full report.
+- the run time and the path of the full report;
+- whether any figures came from the web rather than the data tools.
 
 End with one line: it is a dry-run research result, not investment advice.
