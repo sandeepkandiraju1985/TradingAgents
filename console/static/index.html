@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradingAgents Console</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">Trading<b>Agents</b></div>
+    <nav aria-label="Sections">
+      <a href="#analyze">Analyze</a>
+      <a href="#positions">Positions</a>
+      <a href="#charts">Charts</a>
+      <a href="#watchlists">Watchlists</a>
+      <a href="#approvals">Approvals <span class="count" id="navCount"></span></a>
+      <a href="#ledger">Ledger</a>
+      <a href="#settings">Settings</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <form id="search" role="search">
+        <input id="q" placeholder="Symbol, e.g. INFY.NS or NVDA" autocomplete="off" aria-label="Open a stock chart">
+        <button class="btn" type="submit">Open chart</button>
+      </form>
+      <div class="scan">
+        <label class="switch"><input type="checkbox" id="hourlyTop"> Hourly scan in NSE hours</label>
+        <button type="button" class="btn primary" id="scanBtn">Scan now</button>
+      </div>
+    </header>
+
+    <div class="strip"><b>DRY-RUN</b>Approved trades and auto-exits are recorded here only. Nothing is sent to INDmoney or any broker.</div>
+
+    <section class="card quotes" id="quotes" aria-label="Markets"></section>
+
+    <section class="card hero" id="analyze" aria-label="Analyses and performance">
+      <div>
+        <h2>Run an analysis</h2>
+        <form id="analyzeForm" class="form">
+          <label class="field">Symbol<input id="aSym" required placeholder="INFY.NS"></label>
+          <label class="field">Trade date<input id="aDate" type="date" required></label>
+          <div class="field full"><span>Analysts</span>
+            <div class="checks" id="aAnalysts">
+              <label><input type="checkbox" value="market" checked> Market</label>
+              <label><input type="checkbox" value="social" checked> Sentiment</label>
+              <label><input type="checkbox" value="news" checked> News</label>
+              <label><input type="checkbox" value="fundamentals" checked> Fundamentals</label>
+            </div>
+          </div>
+          <div class="full"><button class="btn primary" type="submit" id="aRun">Run analysis</button></div>
+        </form>
+        <p class="fine">A run makes many Gemini calls and takes several minutes. Runs go one at a time; a Buy or Sell becomes a proposal in Approvals.</p>
+        <div class="cardhead" style="margin: 14px 0 4px;"><h3>Recent analyses</h3></div>
+        <div class="scroll">
+          <table class="tbl">
+            <thead><tr><th>Stock</th><th>Result</th><th class="r">Time · LLM calls</th><th></th></tr></thead>
+            <tbody id="analysesBody"></tbody>
+          </table>
+        </div>
+        <p class="statline" id="effStats"></p>
+      </div>
+
+      <div class="perf">
+        <div class="controls">
+          <select id="wlSelect" aria-label="Watchlist to chart"></select>
+          <div class="right">
+            <label class="amount" for="amount">Simulated on <span id="amountCur">₹</span><input id="amount" type="number" min="100" step="1000" value="10000"></label>
+            <div class="seg" id="modeSeg" role="group" aria-label="Value or percent">
+              <button type="button" data-v="cash" aria-pressed="true" id="modeCash">₹</button>
+              <button type="button" data-v="pct" aria-pressed="false">%</button>
+            </div>
+            <div class="seg" id="rangeSeg" role="group" aria-label="Time range">
+              <button type="button" data-v="21" aria-pressed="false">1M</button>
+              <button type="button" data-v="126" aria-pressed="false">6M</button>
+              <button type="button" data-v="252" aria-pressed="true">1Y</button>
+              <button type="button" data-v="1260" aria-pressed="false">5Y</button>
+              <button type="button" data-v="0" aria-pressed="false">Max</button>
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          <button type="button" class="key" id="keyS" aria-pressed="true"><span class="sw-rect" style="background: var(--s1)"></span><span id="keySName">Watchlist</span><b id="keySRet"></b></button>
+          <button type="button" class="key" id="keyB" aria-pressed="true"><span class="sw-line" style="background: var(--s2)"></span><span id="keyBName">Benchmark</span><b id="keyBRet"></b></button>
+        </div>
+        <div class="chartwrap">
+          <div class="chart" id="perfChart"></div>
+          <div class="tip" id="perfTip" hidden></div>
+        </div>
+        <div class="yhead">
+          <h3>Calendar-year returns</h3>
+          <details id="ydetails"><summary>Show as table</summary></details>
+        </div>
+        <div class="chartwrap" id="yearWrap">
+          <svg id="yearly" role="img" aria-label="Calendar-year returns, watchlist versus benchmark"></svg>
+          <div class="tip" id="yearTip" hidden></div>
+        </div>
+        <div class="ytable" id="ytable" hidden></div>
+        <p class="fine" id="perfNote">Equal amounts in each stock, bought at the start of the range. Drag to pan, scroll to zoom. Past returns don't predict future returns.</p>
+      </div>
+    </section>
+
+    <section class="card" id="scanCard" aria-label="Scan results">
+      <div class="cardhead"><h2>Scan results</h2><span class="chip" id="scanStatus">Not run yet</span></div>
+      <div class="scroll">
+        <table class="tbl">
+          <thead><tr><th>Stock</th><th class="r">Last</th><th class="r">Today</th><th>Why it was flagged</th><th></th></tr></thead>
+          <tbody id="scanBody"></tbody>
+        </table>
+      </div>
+      <p class="fine">A scan reads prices only, with no AI calls. Flagged stocks are worth a full analysis. Every scan also runs the auto-exit check.</p>
+    </section>
+
+    <section class="card" id="positions" aria-label="Open positions">
+      <div class="cardhead">
+        <h2>Open positions</h2>
+        <button type="button" class="btn small" id="exitBtn">Check auto-exits now</button>
+      </div>
+      <div class="scroll">
+        <table class="tbl">
+          <thead><tr><th>Stock</th><th class="r">Qty</th><th class="r">Avg. entry</th><th class="r">Last</th><th class="r">Gain/loss</th><th class="r">Auto-exit below</th></tr></thead>
+          <tbody id="posBody"></tbody>
+        </table>
+      </div>
+      <p class="fine" id="exitNote"></p>
+    </section>
+
+    <section class="card" aria-label="Closed trades">
+      <div class="cardhead">
+        <h2>Closed trades</h2>
+        <div class="arrows">
+          <button type="button" id="prevL" aria-label="Scroll left">‹</button>
+          <button type="button" id="prevR" aria-label="Scroll right">›</button>
+        </div>
+      </div>
+      <div class="carousel" id="carousel"></div>
+    </section>
+
+    <section class="card" id="charts" aria-label="Stock chart">
+      <div class="stockhead">
+        <h2 id="stkSym">Chart</h2>
+        <span class="muted" id="stkName"></span>
+        <span class="px" id="stkPx"></span>
+        <span class="num" id="stkChg"></span>
+        <button type="button" class="linkbtn" id="stkAnalyze" hidden>Analyze this stock</button>
+      </div>
+      <div class="stockctl">
+        <div class="seg" id="typeSeg" role="group" aria-label="Chart type">
+          <button type="button" data-v="candle" aria-pressed="true">Candles</button>
+          <button type="button" data-v="line" aria-pressed="false">Line</button>
+          <button type="button" data-v="area" aria-pressed="false">Area</button>
+        </div>
+        <div class="seg" id="srangeSeg" role="group" aria-label="Chart range">
+          <button type="button" data-v="21" aria-pressed="false">1M</button>
+          <button type="button" data-v="63" aria-pressed="false">3M</button>
+          <button type="button" data-v="126" aria-pressed="true">6M</button>
+          <button type="button" data-v="252" aria-pressed="false">1Y</button>
+          <button type="button" data-v="500" aria-pressed="false">2Y</button>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="optSma20" checked> SMA 20</label>
+          <label><input type="checkbox" id="optSma50"> SMA 50</label>
+          <label><input type="checkbox" id="optVol" checked> Volume</label>
+          <label><input type="checkbox" id="optSig" checked> Trades &amp; auto-exit line</label>
+        </div>
+      </div>
+      <div class="chartwrap">
+        <div class="ohlc" id="ohlc"></div>
+        <div class="chart tall" id="stockChart"></div>
+      </div>
+      <div class="rule">
+        <span><i class="entry"></i>Average entry</span>
+        <span><i></i>Auto-exit line</span>
+        <span id="ruleState"></span>
+      </div>
+    </section>
+
+    <section class="card" id="watchlists" aria-label="Watchlists">
+      <div class="cardhead">
+        <h2>Watchlists</h2>
+        <button type="button" class="btn small" id="newWlBtn">New watchlist</button>
+      </div>
+      <form id="newWl" class="form" hidden>
+        <label class="field">Name<input id="nwName" required maxlength="60" placeholder="My picks"></label>
+        <label class="field">Benchmark
+          <select id="nwBench">
+            <option value="^NSEI">NIFTY 50</option>
+            <option value="^BSESN">SENSEX</option>
+            <option value="^GSPC">S&amp;P 500</option>
+            <option value="^NDX">NASDAQ 100</option>
+          </select>
+        </label>
+        <label class="field full">Symbols, separated by commas<input id="nwSyms" placeholder="TCS.NS, ITC.NS, NVDA"></label>
+        <div class="full" style="display: flex; gap: 8px;"><button class="btn primary" type="submit">Create</button><button class="btn" type="button" id="nwCancel">Cancel</button></div>
+      </form>
+      <div class="sgrid" id="wlGrid"></div>
+    </section>
+
+    <div class="split">
+      <section class="card" id="approvals" aria-label="Approvals">
+        <div class="cardhead"><h2>Approvals</h2><span class="chip" id="pendingChip">0 waiting</span></div>
+        <div id="queue"></div>
+      </section>
+      <section class="card" aria-label="Auto-exits">
+        <div class="cardhead"><h2>Auto-exits</h2><span class="chip" id="ruleChip">Rule: loss over 5%</span></div>
+        <div id="exitlog"></div>
+      </section>
+    </div>
+
+    <section class="card" id="ledger" aria-label="Ledger">
+      <div class="cardhead"><h2>Ledger</h2><span class="chip">Dry-run orders</span></div>
+      <div class="scroll">
+        <table class="tbl">
+          <thead><tr><th>Time</th><th>Stock</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Why</th><th>Mode</th></tr></thead>
+          <tbody id="ledgerBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="settings" aria-label="Settings">
+      <div class="cardhead"><h2>Settings</h2></div>
+      <form id="settingsForm" class="settings">
+        <label class="field">Auto-exit when down more than (%)<input id="sStop" type="number" min="0.5" max="50" step="0.5"></label>
+        <label class="field">Budget per new position, ₹<input id="sInr" type="number" min="0" step="1000"></label>
+        <label class="field">Budget per new position, $<input id="sUsd" type="number" min="0" step="50"></label>
+        <label class="switch"><input type="checkbox" id="hourlySet"> Hourly scan, Mon to Fri, 9:15 to 15:30 IST</label>
+        <div><button class="btn primary" type="submit">Save settings</button></div>
+      </form>
+      <p class="lock" style="margin-top: 14px;"><span class="chip">Live trading: off</span> The console has no live order path. Every order is dry-run.</p>
+    </section>
+
+    <section class="card" aria-label="Activity">
+      <div class="cardhead"><h2>Activity</h2></div>
+      <ul class="events" id="events"></ul>
+    </section>
+
+    <footer>TradingAgents Console runs on this computer only. Charts by <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener">TradingView Lightweight Charts</a>. Prices from Yahoo Finance. Not investment advice.</footer>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
