@@ -119,11 +119,11 @@
       <div class="cardhead"><h2>Scan results</h2><span class="chip" id="scanStatus">Not run yet</span></div>
       <div class="scroll">
         <table class="tbl">
-          <thead><tr><th>Stock</th><th class="r">Last</th><th class="r">Today</th><th>Why it was flagged</th><th></th></tr></thead>
+          <thead><tr><th>Stock</th><th class="r">Last</th><th class="r">Today</th><th>Volume profile setup</th><th>Why it was flagged</th><th></th></tr></thead>
           <tbody id="scanBody"></tbody>
         </table>
       </div>
-      <p class="fine">A scan reads prices only, with no AI calls. Flagged stocks are worth a full analysis. Every scan also runs the auto-exit check.</p>
+      <p class="fine">A scan reads prices only, with no AI calls. A fresh volume-profile entry signal with reward/risk of 1.5 or more becomes a BUY proposal. Every scan also runs the auto-exit check.</p>
     </section>
 
     <section class="card" id="positions" aria-label="Open positions">
@@ -159,7 +159,12 @@
         <span class="num" id="stkChg"></span>
         <button type="button" class="linkbtn" id="stkAnalyze" hidden>Analyze this stock</button>
       </div>
+      <div class="setupbar" id="stkSetup" hidden></div>
       <div class="stockctl">
+        <div class="seg" id="ivSeg" role="group" aria-label="Candle size">
+          <button type="button" data-v="1d" aria-pressed="true">Daily</button>
+          <button type="button" data-v="30m" aria-pressed="false">30-min</button>
+        </div>
         <div class="seg" id="typeSeg" role="group" aria-label="Chart type">
           <button type="button" data-v="candle" aria-pressed="true">Candles</button>
           <button type="button" data-v="line" aria-pressed="false">Line</button>
@@ -177,15 +182,19 @@
           <label><input type="checkbox" id="optSma50"> SMA 50</label>
           <label><input type="checkbox" id="optVol" checked> Volume</label>
           <label><input type="checkbox" id="optSig" checked> Trades &amp; auto-exit line</label>
+          <label><input type="checkbox" id="optVP" checked> Volume profile setup</label>
         </div>
       </div>
       <div class="chartwrap">
         <div class="ohlc" id="ohlc"></div>
         <div class="chart tall" id="stockChart"></div>
+        <canvas class="vpcanvas" id="vpCanvas" aria-hidden="true"></canvas>
       </div>
       <div class="rule">
         <span><i class="entry"></i>Average entry</span>
         <span><i></i>Auto-exit line</span>
+        <span><i class="poc"></i>POC (most traded price)</span>
+        <span><i class="tgt"></i>Setup target</span>
         <span id="ruleState"></span>
       </div>
     </section>

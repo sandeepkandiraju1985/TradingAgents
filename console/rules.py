@@ -40,6 +40,13 @@ def stop_price(avg_price: float, stop_loss_pct: float) -> float:
     return avg_price * (1.0 - stop_loss_pct / 100.0)
 
 
+def exit_price(avg_price: float, stop_loss_pct: float, setup_stop: float | None) -> float:
+    """Where a position is closed: the loss limit or the setup's own stop,
+    whichever the price would reach first (the higher of the two)."""
+    limit = stop_price(avg_price, stop_loss_pct)
+    return max(limit, setup_stop) if setup_stop else limit
+
+
 def size_order(budget: float, price: float) -> int:
     """Whole shares that fit in ``budget``; 0 when the budget buys none."""
     if price <= 0 or budget <= 0:

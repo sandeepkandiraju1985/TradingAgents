@@ -51,12 +51,20 @@ class YahooMarket:
             self._cache[key] = (now, value)
         return value
 
-    def bars(self, symbol: str, period: str = "2y") -> list[dict]:
-        """Daily OHLCV bars, oldest first, as {time, open, high, low, close, volume}."""
+    def bars(self, symbol: str, period: str = "2y", interval: str = "1d") -> list[dict]:
+        """OHLCV bars, oldest first, as {time, open, high, low, close, volume}.
+
+        Daily bars carry a "YYYY-MM-DD" time. Intraday bars (``interval="30m"``;
+        Yahoo serves about 60 days of them) carry seconds since the epoch,
+        shifted by the exchange's UTC offset so a chart drawing UTC shows the
+        exchange's own clock (9:15 for an NSE open).
+        """
+        intraday = interval != "1d"
+
         def load():
             import yfinance as yf
             try:
-                df = yf.Ticker(symbol).history(period=period, interval="1d", auto_adjust=False,
+                df = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False,
                                                timeout=self.timeout)
             except Exception as exc:  # yfinance raises many types for network trouble
                 raise MarketDataError(f"{symbol}: {exc}") from exc
@@ -65,12 +73,14 @@ class YahooMarket:
                 o, h, lo, c = (_num(row.get(k)) for k in ("Open", "High", "Low", "Close"))
                 if None in (o, h, lo, c):
                     continue
-                out.append({"time": ts.strftime("%Y-%m-%d"), "open": o, "high": h, "low": lo, "close": c,
+                when = (int(ts.timestamp() + (ts.utcoffset().total_seconds() if ts.utcoffset() else 0))
+                        if intraday else ts.strftime("%Y-%m-%d"))
+                out.append({"time": when, "open": o, "high": h, "low": lo, "close": c,
                             "volume": _num(row.get("Volume")) or 0.0})
             if not out:
                 raise MarketDataError(f"No price data for {symbol}. Check the symbol, e.g. INFY.NS for NSE stocks.")
             return out
-        return self._cached(("bars", symbol, period), load)
+        return self._cached(("bars", symbol, period, interval), load)
 
     def last_price(self, symbol: str) -> float:
         return self.bars(symbol, "1mo")[-1]["close"]

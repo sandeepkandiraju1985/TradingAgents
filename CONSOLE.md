@@ -15,6 +15,27 @@ your browser.
   auto-exit line.
 - **Efficiency numbers** for each run: time taken, LLM calls and tokens.
 
+## Volume profile pullback setup
+
+A rule-based entry that every scan checks, on each watchlist stock:
+
+1. The daily chart is in an uptrend: its last two swing highs and swing lows are rising.
+2. On 30-minute candles, the latest swing low and the swing high after it mark the move.
+3. A volume profile over that move finds the POC, the price where the most volume traded.
+4. The setup waits for price to pull back to the POC (status: Waiting, then Testing).
+5. An **Entry signal** fires when a candle dips into the POC zone (POC +/- 0.3%) and
+   closes back above it, with a lower wick at least half the candle, or a close above
+   the previous candle's high. A close below the swing low cancels the setup.
+
+A fresh entry signal (within the last hour) with reward/risk of at least 1.5 becomes
+a BUY proposal: stop just below the swing low, target at the swing high. Once
+approved, the position exits at the setup stop or the loss limit, whichever comes
+first. The stock chart draws the profile, the POC, the stop and the target (tick
+**Volume profile setup**; switch to **30-min** to see the swing).
+
+The profile is built from 30-minute candles (Yahoo serves about 60 days of them),
+so its POC approximates what charting tools compute from trade-by-trade data.
+
 **Dry-run only.** Nothing is sent to INDmoney or any other broker. The console
 has no live order path, and live trading cannot be switched on from it.
 

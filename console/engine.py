@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytz
 
-from . import rules
+from . import rules, volume_profile as vp
 from .broker import get_broker
 from .market import MarketDataError, YahooMarket
 from .progress import Progress
@@ -128,11 +128,11 @@ class Console:
 
     # ---------- orders ----------
     def _place(self, symbol: str, side: str, qty: float, price: float, currency: str, reason: str,
-               proposal_id: int | None = None) -> dict:
+               proposal_id: int | None = None, stop: float | None = None) -> dict:
         broker = self.broker_factory(self.store.settings())
         result = broker.place({"symbol": symbol, "side": side, "qty": qty, "price": price})
         return self.store.add_order(symbol, side, qty, price, currency, result["mode"], reason,
-                                    proposal_id=proposal_id, broker_ref=result["ref"])
+                                    proposal_id=proposal_id, broker_ref=result["ref"], stop=stop)
 
     def _price(self, symbol: str) -> float | None:
         try:
@@ -156,7 +156,9 @@ class Console:
         price = self._price(p["symbol"]) or p["price"]
         if not self.store.claim_proposal(pid, "approved"):
             raise Conflict(f"Proposal {pid} was decided elsewhere")
-        order = self._place(p["symbol"], p["side"], qty, price, p["currency"], "Approved by you", proposal_id=pid)
+        reason = "Approved by you" + (" (volume profile setup)" if p.get("source") == "volume_profile" else "")
+        order = self._place(p["symbol"], p["side"], qty, price, p["currency"], reason, proposal_id=pid,
+                            stop=p.get("stop") if p["side"] == "BUY" else None)
         self.store.add_event("approved", f"Approved {p['side']} {qty:g} {p['symbol']} at {price:,.2f} "
                              f"({order['mode']})", p["symbol"])
         return order
@@ -177,13 +179,18 @@ class Console:
             exits = []
             for pos in self.store.book()["open"]:
                 price = self._price(pos["symbol"])
-                if price is None or not rules.should_exit(pos["avg_price"], price, stop):
+                if price is None:
                     continue
                 loss = rules.change_pct(pos["avg_price"], price)
-                reason = f"Auto-exit: down {abs(loss):.1f}% from entry (limit {stop:g}%)"
+                if rules.should_exit(pos["avg_price"], price, stop):
+                    reason = f"Auto-exit: down {abs(loss):.1f}% from entry (limit {stop:g}%)"
+                elif pos.get("stop") and price < pos["stop"]:
+                    reason = f"Auto-exit: below the setup stop of {pos['stop']:,.2f} ({loss:+.1f}% from entry)"
+                else:
+                    continue
                 order = self._place(pos["symbol"], "SELL", pos["qty"], price, pos["currency"], reason)
-                msg = (f"Sold {pos['qty']:g} {pos['symbol']} at {price:,.2f}, {abs(loss):.1f}% below the "
-                       f"average entry of {pos['avg_price']:,.2f} ({order['mode']}).")
+                msg = (f"Sold {pos['qty']:g} {pos['symbol']} at {price:,.2f} ({loss:+.1f}% from the average entry "
+                       f"of {pos['avg_price']:,.2f}). {reason.split(': ', 1)[1].capitalize()} ({order['mode']}).")
                 self.store.add_event("auto_exit", msg, pos["symbol"],
                                      {"entry": pos["avg_price"], "price": price, "loss_pct": loss, "qty": pos["qty"]})
                 exits.append(order)
@@ -205,22 +212,69 @@ class Console:
             results = []
             for sym in symbols:
                 try:
-                    bars = self.market.bars(sym, "6mo")
+                    bars = self.market.bars(sym, "1y")
                 except MarketDataError as exc:
                     results.append({"symbol": sym, "error": str(exc)})
                     continue
                 last = bars[-1]["close"]
                 prev = bars[-2]["close"] if len(bars) > 1 else last
-                results.append({"symbol": sym, "last": last, "currency": rules.currency_for(sym),
-                                "change_pct": rules.change_pct(prev, last), "flags": rules.screen(bars)})
+                row = {"symbol": sym, "last": last, "currency": rules.currency_for(sym),
+                       "change_pct": rules.change_pct(prev, last), "flags": rules.screen(bars)}
+                try:
+                    setup = self.setup(sym)
+                except MarketDataError as exc:
+                    setup = {"status": "error", "message": f"No 30-minute data: {exc}"}
+                row["setup"] = {k: setup.get(k) for k in ("status", "message", "poc", "entry", "stop", "target",
+                                                           "reward_risk", "distance_pct", "fresh")}
+                if setup.get("status") == "entry":
+                    row["flags"] = row["flags"] + ["Volume profile entry signal"]
+                    pid = self._propose_setup(sym, setup)
+                    row["setup"]["proposal_id"] = pid
+                results.append(row)
             exits = self.check_exits()
             summary = {"ts": time.time(), "count": len(symbols),
-                       "flagged": sum(1 for r in results if r.get("flags")), "exits": len(exits)}
+                       "flagged": sum(1 for r in results if r.get("flags")), "exits": len(exits),
+                       "proposed": sum(1 for r in results if (r.get("setup") or {}).get("proposal_id"))}
             self.store.set_setting("last_scan", summary)
             self.store.set_setting("last_scan_results", results)
             self.store.add_event("scan", f"Screened {summary['count']} stocks: {summary['flagged']} flagged, "
-                                 f"{summary['exits']} auto-exits.")
+                                 f"{summary['proposed']} volume-profile proposals, {summary['exits']} auto-exits.")
             return {"summary": summary, "results": results, "exits": exits}
+
+    # ---------- volume-profile setups ----------
+    def setup(self, symbol: str) -> dict:
+        """The volume-profile pullback setup: daily trend, 30-minute entry."""
+        daily = self.market.bars(symbol, "1y")
+        intraday = self.market.bars(symbol, "60d", interval="30m")
+        out = vp.evaluate(daily, intraday)
+        out.update(symbol=symbol, currency=rules.currency_for(symbol))
+        return out
+
+    def _propose_setup(self, symbol: str, setup: dict) -> int | None:
+        """A BUY proposal for a fresh entry signal, once per signal."""
+        rr = setup.get("reward_risk")
+        if not setup.get("fresh") or rr is None or rr < vp.MIN_REWARD_RISK:
+            return None
+        if self.store.held_qty(symbol) > 0:
+            return None
+        signal = f"vp:{symbol}:{setup['signal_time']}"
+        if self.store.has_signal(signal):
+            return None
+        cur = rules.currency_for(symbol)
+        entry = setup["entry"]
+        qty = rules.size_order(float(self.store.settings()["trade_budget"].get(cur, 0)), entry)
+        if qty <= 0:
+            self.store.add_event("proposal", f"{symbol}: volume-profile entry at {entry:,.2f}, but the {cur} "
+                                 f"budget buys no shares.", symbol)
+            return None
+        note = (f"Pulled back to the POC at {setup['poc']:,.2f} and closed {entry:,.2f}. "
+                f"Stop {setup['stop']:,.2f} (below the swing low), target {setup['target']:,.2f}, "
+                f"reward/risk {rr:.1f}.")
+        pid = self.store.create_proposal(None, symbol, "BUY", qty, entry, cur, "Volume profile", note,
+                                         stop=setup["stop"], target=setup["target"], source="volume_profile",
+                                         signal=signal)
+        self.store.add_event("proposal", f"BUY {qty:g} {symbol} proposed (volume profile setup).", symbol)
+        return pid
 
     # ---------- analyses ----------
     def submit_analysis(self, symbol: str, trade_date: str, analysts: list[str]) -> int:

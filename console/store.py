@@ -97,6 +97,15 @@ DEFAULT_WATCHLISTS = [
 
 _ANALYSIS_FIELDS = {"status", "rating", "summary", "report_path", "error", "stats", "progress", "started", "finished"}
 _JSON_FIELDS = ("stats", "progress")
+# Columns added after the first release; older databases gain them on start.
+_ADDED_COLUMNS = [
+    ("analyses", "progress", "TEXT"),
+    ("proposals", "stop", "REAL"),      # a strategy's own stop-loss price
+    ("proposals", "target", "REAL"),
+    ("proposals", "source", "TEXT"),    # "agents" or "volume_profile"
+    ("proposals", "signal", "TEXT"),    # identifies the signal, so it is proposed once
+    ("orders", "stop", "REAL"),
+]
 _EPS = 1e-9
 
 
@@ -111,9 +120,10 @@ class Store:
         with self._lock:
             self._db.executescript(SCHEMA)
             # Databases from before the agent view lack the progress column.
-            cols = {r["name"] for r in self._db.execute("PRAGMA table_info(analyses)")}
-            if "progress" not in cols:
-                self._db.execute("ALTER TABLE analyses ADD COLUMN progress TEXT")
+            for table, col, kind in _ADDED_COLUMNS:
+                cols = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+                if col not in cols:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
             self._db.commit()
             if not self._all("SELECT id FROM watchlists LIMIT 1"):
                 for name, bench, symbols in DEFAULT_WATCHLISTS:
@@ -213,11 +223,17 @@ class Store:
 
     # ---------- proposals ----------
     def create_proposal(self, analysis_id: int | None, symbol: str, side: str, qty: float, price: float,
-                        currency: str, rating: str | None, note: str) -> int:
+                        currency: str, rating: str | None, note: str, stop: float | None = None,
+                        target: float | None = None, source: str = "agents", signal: str | None = None) -> int:
         cur = self._run("INSERT INTO proposals(analysis_id, symbol, side, qty, price, currency, rating, note, "
-                        "status, created) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                        (analysis_id, symbol, side, qty, price, currency, rating, note, time.time()))
+                        "status, created, stop, target, source, signal) "
+                        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                        (analysis_id, symbol, side, qty, price, currency, rating, note, time.time(),
+                         stop, target, source, signal))
         return cur.lastrowid
+
+    def has_signal(self, signal: str) -> bool:
+        return self._one("SELECT id FROM proposals WHERE signal = ?", (signal,)) is not None
 
     def proposal(self, pid: int) -> dict | None:
         return self._one("SELECT * FROM proposals WHERE id = ?", (pid,))
@@ -235,11 +251,12 @@ class Store:
 
     # ---------- orders ----------
     def add_order(self, symbol: str, side: str, qty: float, price: float, currency: str, mode: str,
-                  reason: str, proposal_id: int | None = None, broker_ref: str | None = None) -> dict:
+                  reason: str, proposal_id: int | None = None, broker_ref: str | None = None,
+                  stop: float | None = None) -> dict:
         ts = time.time()
         cur = self._run("INSERT INTO orders(ts, symbol, side, qty, price, currency, mode, reason, proposal_id, "
-                        "broker_ref) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (ts, symbol, side, qty, price, currency, mode, reason, proposal_id, broker_ref))
+                        "broker_ref, stop) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (ts, symbol, side, qty, price, currency, mode, reason, proposal_id, broker_ref, stop))
         return self._one("SELECT * FROM orders WHERE id = ?", (cur.lastrowid,))
 
     def orders(self, limit: int = 100, symbol: str | None = None) -> list[dict]:
@@ -256,10 +273,12 @@ class Store:
         closed: list[dict] = []
         for o in self._all("SELECT * FROM orders ORDER BY ts, id"):
             p = held.setdefault(o["symbol"], {"symbol": o["symbol"], "qty": 0.0, "cost": 0.0,
-                                              "currency": o["currency"], "opened": o["ts"]})
+                                              "currency": o["currency"], "opened": o["ts"], "stop": None})
             if o["side"] == "BUY":
                 if p["qty"] <= _EPS:
-                    p["opened"] = o["ts"]
+                    p["opened"], p["stop"] = o["ts"], None
+                if o.get("stop"):
+                    p["stop"] = o["stop"]   # the latest strategy stop on the position
                 p["qty"] += o["qty"]
                 p["cost"] += o["qty"] * o["price"]
             else:
@@ -275,7 +294,7 @@ class Store:
                                    "opened": p["opened"], "closed": o["ts"], "reason": o["reason"]})
                     p["qty"], p["cost"] = 0.0, 0.0
         open_ = [{"symbol": p["symbol"], "qty": p["qty"], "avg_price": p["cost"] / p["qty"],
-                  "currency": p["currency"], "opened": p["opened"]}
+                  "currency": p["currency"], "opened": p["opened"], "stop": p["stop"]}
                  for p in held.values() if p["qty"] > _EPS]
         closed.reverse()
         return {"open": open_, "closed": closed}

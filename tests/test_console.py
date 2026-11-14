@@ -23,7 +23,7 @@ class FakeMarket:
             raise MarketDataError(f"no price for {symbol}")
         return self.prices[symbol]
 
-    def bars(self, symbol, period="2y"):
+    def bars(self, symbol, period="2y", interval="1d"):
         p = self.last_price(symbol)
         return [{"time": f"2026-11-{d:02d}", "open": p, "high": p, "low": p, "close": p, "volume": 1}
                 for d in range(1, 13)]

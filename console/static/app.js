@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const S = {
     data: null, wl: null, perf: {}, range: 252, mode: "cash", amount: 10000, showS: true, showB: true,
-    sym: null, stock: null, type: "candle", srange: 126, booted: false
+    sym: null, stock: null, type: "candle", srange: 126, booted: false, interval: "1d", setup: null
   };
   const BENCH_NAMES = { "^NSEI": "NIFTY 50", "^BSESN": "SENSEX", "^GSPC": "S&P 500", "^NDX": "NASDAQ 100" };
   const CUR = { INR: "₹", USD: "$" };
@@ -59,7 +59,7 @@
   function sma(vals, n) { const out = []; let t = 0; for (let i = 0; i < vals.length; i++) { t += vals[i].value; if (i >= n) t -= vals[i - n].value; if (i >= n - 1) out.push({ time: vals[i].time, value: t / n }); } return out; }
 
   /* ---------- theme ---------- */
-  function C() { const s = getComputedStyle(document.documentElement); const g = function (k) { return s.getPropertyValue("--" + k).trim(); }; return { surface: g("surface"), ink: g("ink"), muted: g("muted"), faint: g("faint"), line: g("line"), grid: g("grid"), s1: g("s1"), s2: g("s2"), up: g("up"), down: g("down") }; }
+  function C() { const s = getComputedStyle(document.documentElement); const g = function (k) { return s.getPropertyValue("--" + k).trim(); }; return { surface: g("surface"), ink: g("ink"), muted: g("muted"), faint: g("faint"), line: g("line"), grid: g("grid"), s1: g("s1"), s2: g("s2"), up: g("up"), down: g("down"), accent: g("accent") }; }
   function hexA(hex, a) { const h = (hex || "#888888").replace("#", ""); const full = h.length === 3 ? h.split("").map(function (x) { return x + x; }).join("") : h; const n = parseInt(full, 16); return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")"; }
   function chartOpts(c) {
     return {
@@ -369,12 +369,21 @@
     $("scanStatus").textContent = s ? "Last scan " + when(s.ts) + " · " + s.count + " screened · " + s.flagged + " flagged" : "Not run yet";
     const body = $("scanBody"); body.textContent = "";
     const rows = S.data.scan_results.slice().sort(function (a, b) { return (b.flags ? b.flags.length : -1) - (a.flags ? a.flags.length : -1); });
-    if (!rows.length) { const tr = el("tr"), td = el("td", "empty", "Press Scan now to screen every watchlist."); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); return; }
+    if (!rows.length) { const tr = el("tr"), td = el("td", "empty", "Press Scan now to screen every watchlist."); td.colSpan = 6; tr.appendChild(td); body.appendChild(tr); return; }
     rows.forEach(function (r) {
       const tr = el("tr"), td1 = el("td"); td1.appendChild(symButton(r.symbol)); tr.appendChild(td1);
-      if (r.error) { const td = el("td", "muted", r.error); td.colSpan = 4; tr.appendChild(td); body.appendChild(tr); return; }
+      if (r.error) { const td = el("td", "muted", r.error); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); return; }
       tr.appendChild(el("td", "r num", money(r.last, r.currency)));
       tr.appendChild(el("td", "r num " + dir(r.change_pct), pct(r.change_pct, 2)));
+      const su = r.setup || {}, tdS = el("td");
+      if (su.status) {
+        tdS.appendChild(el("span", "vpchip " + su.status, SETUP_LABEL[su.status] || su.status));
+        const detail = su.status === "entry" ? "at " + money(su.entry, r.currency) + (su.reward_risk ? " · R/R " + su.reward_risk.toFixed(1) : "") + (su.proposal_id ? " · proposed" : "")
+          : su.status === "waiting" && su.distance_pct !== null && su.distance_pct !== undefined ? su.distance_pct.toFixed(1) + "% above POC " + money(su.poc, r.currency)
+          : su.status === "testing" ? "POC " + money(su.poc, r.currency) : "";
+        if (detail) tdS.appendChild(el("small", "", detail));
+      }
+      tr.appendChild(tdS);
       tr.appendChild(el("td", r.flags.length ? "" : "muted", r.flags.length ? r.flags.join(" · ") : "No signal"));
       const td5 = el("td", "r");
       if (r.flags.length) { const b = el("button", "btn small", "Analyze"); b.type = "button"; b.addEventListener("click", function () { prefill(r.symbol); }); td5.appendChild(b); }
@@ -448,7 +457,7 @@
       l.appendChild(el("span", "side " + p.side.toLowerCase(), p.side)); l.appendChild(symButton(p.symbol, p.symbol));
       h.appendChild(l); h.appendChild(el("span", "num", p.qty + " @ " + money(p.price, p.currency)));
       o.appendChild(h);
-      o.appendChild(el("p", "", "Rated " + (p.rating || "–") + ". " + (p.note || "")));
+      o.appendChild(el("p", "", p.source === "volume_profile" ? "Volume profile setup. " + (p.note || "") : "Rated " + (p.rating || "–") + ". " + (p.note || "")));
       const a = el("div", "actions"), ok = el("button", "btn ok small", "Approve"), no = el("button", "btn no small", "Reject");
       ok.type = no.type = "button";
       ok.addEventListener("click", async function () {
@@ -753,6 +762,8 @@
       showOhlc(bar || S.stock.bars[S.stock.bars.length - 1]);
     });
     stockColors();
+    stk.timeScale().subscribeVisibleLogicalRangeChange(function () { requestAnimationFrame(drawVP); });
+    if (window.ResizeObserver) new ResizeObserver(function () { requestAnimationFrame(drawVP); }).observe($("stockChart"));
   }
   function stockColors() {
     const c = C();
@@ -764,19 +775,28 @@
   }
   function showOhlc(b) {
     const o = $("ohlc"), cur = S.stock.currency; o.textContent = "";
-    o.appendChild(document.createTextNode(dayOf(b.time) + "  "));
+    o.appendChild(document.createTextNode(barTime(b.time) + "  "));
     [["O", b.open], ["H", b.high], ["L", b.low], ["C", b.close]].forEach(function (kv) { o.appendChild(document.createTextNode(kv[0] + " ")); o.appendChild(el("b", "", money(kv[1], cur))); o.appendChild(document.createTextNode("  ")); });
   }
+  function barTime(t) {
+    if (typeof t !== "number") return dayOf(t);
+    // Intraday times are the exchange's clock written as UTC (see market.py).
+    return new Date(t * 1000).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  }
+  function intraday() { return S.interval !== "1d"; }
+  function visibleBars() { return intraday() ? Math.round(S.srange * 13) : S.srange; }   // ~13 half-hours per NSE day
   async function loadStock(sym, scroll) {
+    if (S.sym !== sym) S.setup = null;
     S.sym = sym;
     $("stkSym").textContent = short(sym); $("stkName").textContent = sym; $("stkPx").textContent = ""; $("stkChg").textContent = "";
     if (scroll) $("charts").scrollIntoView({ block: "start" });
     if (!stk) return;
     $("stockChart").classList.add("loading");
     try {
-      const d = await api("/api/bars/" + encodeURIComponent(sym) + "?period=2y");
+      const d = await api("/api/bars/" + encodeURIComponent(sym) + "?period=2y&interval=" + S.interval);
       if (S.sym !== sym) return;
       S.stock = d; chartMessage("stockChart", null); renderStock();
+      if ($("optVP").checked) loadSetup(sym);
     } catch (e) {
       S.stock = null; chartMessage("stockChart", e.message); $("ohlc").textContent = ""; $("ruleState").textContent = "";
     }
@@ -786,7 +806,7 @@
     const d = S.stock; if (!d) return;
     const c = C(), bars = d.bars, n = bars.length, last = bars[n - 1], prev = bars[n - 2] || last, ch = (last.close / prev.close - 1) * 100;
     $("stkPx").textContent = money(last.close, d.currency);
-    $("stkChg").textContent = pct(ch, 2) + " on the day"; $("stkChg").className = "num " + dir(ch);
+    $("stkChg").textContent = pct(ch, 2) + (intraday() ? " last 30 min" : " on the day"); $("stkChg").className = "num " + dir(ch);
     $("stkAnalyze").hidden = false;
     candle.setData(bars.map(function (b) { return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }; }));
     const closes = bars.map(function (b) { return { time: b.time, value: b.close }; });
@@ -797,7 +817,8 @@
     [candle, line, area, s20, s50].forEach(function (s) { s.applyOptions({ priceFormat: pf }); });
     showOhlc(last);
     renderStockView();
-    stk.timeScale().setVisibleRange({ from: bars[Math.max(0, n - S.srange)].time, to: last.time });
+    stk.applyOptions({ timeScale: { timeVisible: intraday(), secondsVisible: false } });
+    stk.timeScale().setVisibleRange({ from: bars[Math.max(0, n - visibleBars())].time, to: last.time });
     const pos = d.position;
     $("ruleState").textContent = pos
       ? "Holding " + pos.qty + " at " + money(pos.avg_price, d.currency) + " (" + pct((last.close / pos.avg_price - 1) * 100) + "). Auto-exit if the price falls below " + money(pos.stop_price, d.currency) + "."
@@ -811,23 +832,83 @@
     s20.applyOptions({ visible: $("optSma20").checked }); s50.applyOptions({ visible: $("optSma50").checked }); vol.applyOptions({ visible: $("optVol").checked });
     [candle, line, area].forEach(function (s) { s.setMarkers([]); });
     plines.forEach(function (pl) { pl[0].removePriceLine(pl[1]); }); plines = [];
-    if (!sig) return;
     const p = primary();
-    const marks = d.orders.slice().reverse().map(function (o) {
+    let marks = [];
+    if (sig && !intraday()) marks = d.orders.slice().reverse().map(function (o) {
       const t = snapToBar(d.bars, localISO(new Date(o.ts * 1000))); if (!t) return null;
       const auto = (o.reason || "").indexOf("Auto-exit") === 0;
       return o.side === "BUY"
         ? { time: t, position: "belowBar", color: c.up, shape: "arrowUp", text: "BUY " + o.qty }
         : { time: t, position: "aboveBar", color: c.down, shape: "arrowDown", text: auto ? "Auto-exit" : "SELL " + o.qty };
-    }).filter(Boolean).sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
+    }).filter(Boolean);
+    const st = S.setup, vpOn = $("optVP").checked && st && st.symbol === d.symbol && st.poc;
+    if (vpOn) {
+      const line = function (price, color, style, title) { plines.push([p, p.createPriceLine({ price: price, color: color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title: title })]); };
+      line(st.poc, c.accent, LWC.LineStyle.Solid, "POC");
+      line(st.target, c.up, LWC.LineStyle.Dashed, "Target");
+      line(st.stop, c.down, LWC.LineStyle.Dashed, "Setup stop");
+      if (st.status === "entry") line(st.entry, c.ink, LWC.LineStyle.Dotted, "Entry");
+      if (intraday()) {
+        const times = new Set(d.bars.map(function (b) { return b.time; }));
+        if (times.has(st.swing_low.time)) marks.push({ time: st.swing_low.time, position: "belowBar", color: c.down, shape: "circle", text: "Swing low" });
+        if (times.has(st.swing_high.time)) marks.push({ time: st.swing_high.time, position: "aboveBar", color: c.up, shape: "circle", text: "Swing high" });
+        if (st.status === "entry" && times.has(st.signal_time)) marks.push({ time: st.signal_time, position: "belowBar", color: c.up, shape: "arrowUp", text: "Entry" });
+      }
+    }
+    marks.sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
     p.setMarkers(marks);
+    requestAnimationFrame(drawVP);
+    if (!sig) return;
     if (d.position) {
       plines.push([p, p.createPriceLine({ price: d.position.avg_price, color: c.faint, lineWidth: 1, lineStyle: LWC.LineStyle.Dotted, axisLabelVisible: true, title: "Entry" })]);
       plines.push([p, p.createPriceLine({ price: d.position.stop_price, color: c.down, lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: "Auto-exit −" + d.stop_loss_pct + "%" })]);
     }
   }
+  const SETUP_LABEL = { no_trend: "No uptrend", no_swing: "No swing yet", waiting: "Waiting for pullback", testing: "Testing POC", entry: "Entry signal", invalid: "Setup failed", error: "No data" };
+  async function loadSetup(sym) {
+    S.setup = null; renderSetupBadge();
+    let st;
+    try { st = await api("/api/setup/" + encodeURIComponent(sym)); }
+    catch (e) { st = { symbol: sym, status: "error", message: e.message }; }
+    if (S.sym !== sym) return;
+    S.setup = st; renderSetupBadge(); renderStockView();
+  }
+  function renderSetupBadge() {
+    const box = $("stkSetup"); box.textContent = "";
+    box.hidden = !$("optVP").checked || !S.sym;
+    if (box.hidden) return;
+    const st = S.setup;
+    if (!st) { box.appendChild(el("span", "muted", "Checking the volume profile setup…")); return; }
+    box.appendChild(el("span", "vpchip " + st.status, SETUP_LABEL[st.status] || st.status));
+    box.appendChild(el("span", "", st.message || ""));
+    if (st.poc) {
+      const cur = st.currency || (S.stock && S.stock.currency);
+      box.appendChild(el("span", "levels", "POC " + money(st.poc, cur) + " · stop " + money(st.stop, cur) + " · target " + money(st.target, cur) +
+        (st.reward_risk ? " · reward/risk " + st.reward_risk.toFixed(1) : "")));
+      if (!intraday()) { const b = el("button", "linkbtn", "See the swing on 30-min"); b.type = "button"; b.addEventListener("click", function () { $("ivSeg").querySelector('[data-v="30m"]').click(); }); box.appendChild(b); }
+    }
+  }
+  function drawVP() {
+    const cv = $("vpCanvas"), box = $("stockChart");
+    const w = box.clientWidth, h = box.clientHeight, dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.width = w + "px"; cv.style.height = h + "px";
+    const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    const st = S.setup;
+    if (!stk || !S.stock || !st || !st.profile || !$("optVP").checked || st.symbol !== S.stock.symbol) return;
+    const p = primary(), c = C(), paneW = w - stk.priceScale("right").width();
+    const maxVol = Math.max.apply(null, st.profile.map(function (b) { return b.volume; })) || 1, maxLen = paneW * 0.22;
+    st.profile.forEach(function (b) {
+      const y1 = p.priceToCoordinate(b.high), y2 = p.priceToCoordinate(b.low);
+      if (y1 === null || y2 === null) return;
+      const len = b.volume / maxVol * maxLen, poc = st.poc >= b.low && st.poc < b.high;
+      ctx.fillStyle = hexA(poc ? c.accent : c.s1, poc ? 0.6 : 0.22);
+      ctx.fillRect(paneW - len, Math.min(y1, y2) + 0.5, len, Math.max(1, Math.abs(y2 - y1) - 1));
+    });
+  }
   seg("typeSeg", function (v) { S.type = v; renderStockView(); });
-  seg("srangeSeg", function (v) { S.srange = +v; if (S.stock) { const b = S.stock.bars; stk.timeScale().setVisibleRange({ from: b[Math.max(0, b.length - S.srange)].time, to: b[b.length - 1].time }); } });
+  seg("srangeSeg", function (v) { S.srange = +v; if (S.stock) { const b = S.stock.bars; stk.timeScale().setVisibleRange({ from: b[Math.max(0, b.length - visibleBars())].time, to: b[b.length - 1].time }); } });
+  seg("ivSeg", function (v) { S.interval = v; if (S.sym) loadStock(S.sym, false); });
+  $("optVP").addEventListener("change", function () { if (this.checked && S.sym && !S.setup) loadSetup(S.sym); renderSetupBadge(); renderStockView(); });
   ["optSma20", "optSma50", "optVol", "optSig"].forEach(function (id) { $(id).addEventListener("change", renderStockView); });
   $("stkAnalyze").addEventListener("click", function () { if (S.sym) prefill(S.sym); });
   $("search").addEventListener("submit", function (e) { e.preventDefault(); const v = $("q").value.trim().toUpperCase(); if (v) loadStock(v, true); });
@@ -838,7 +919,7 @@
     const c = C();
     perf.applyOptions(chartOpts(c));
     sSeries.applyOptions({ lineColor: c.s1, topColor: hexA(c.s1, 0.28), bottomColor: hexA(c.s1, 0.02) }); bSeries.applyOptions({ color: c.s2 });
-    stockColors(); renderStock();
+    stockColors(); renderStock(); requestAnimationFrame(drawVP);
   }
   try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", retheme); } catch (e) { /* old browser */ }
   new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });

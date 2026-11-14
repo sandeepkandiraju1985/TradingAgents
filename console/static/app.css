@@ -270,3 +270,14 @@ footer a { color: var(--muted); }
 .sdot.done { background: var(--up); }
 .sdot.working { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .sdot.working { animation: none; } }
+
+/* Volume-profile setup */
+.vpcanvas { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+.setupbar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12.5px; margin-top: 8px; }
+.setupbar .levels { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.vpchip { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.vpchip.entry { background: var(--up-soft); color: var(--up); border-color: transparent; }
+.vpchip.testing { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.vpchip.invalid, .vpchip.error { background: var(--down-soft); color: var(--down); border-color: transparent; }
+.rule i.poc { border-top: 2px solid var(--accent); }
+.rule i.tgt { border-top: 2px dashed var(--up); }

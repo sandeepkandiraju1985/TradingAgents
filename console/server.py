@@ -98,7 +98,7 @@ def create_app(console: Console) -> FastAPI:
             last = prices[p["symbol"]]
             p["last"] = last
             p["change_pct"] = rules.change_pct(p["avg_price"], last) if last else None
-            p["stop_price"] = rules.stop_price(p["avg_price"], float(s["stop_loss_pct"]))
+            p["stop_price"] = rules.exit_price(p["avg_price"], float(s["stop_loss_pct"]), p.get("stop"))
         return {
             "now": time.time(),
             "settings": {k: v for k, v in s.items() if k != "last_scan_results"},
@@ -117,11 +117,15 @@ def create_app(console: Console) -> FastAPI:
         return console.market.strip()
 
     @app.get("/api/bars/{symbol}")
-    def bars(symbol: str, period: str = "2y"):
+    def bars(symbol: str, period: str = "2y", interval: str = "1d"):
         sym = clean_symbol(symbol)
-        if period not in PERIODS:
+        if interval not in ("1d", "30m"):
+            raise HTTPException(400, "interval must be 1d or 30m")
+        if interval == "30m":
+            period = "60d"   # all the 30-minute history Yahoo serves
+        elif period not in PERIODS:
             raise HTTPException(400, f"period must be one of {sorted(PERIODS)}")
-        data = market_call(console.market.bars, sym, period)
+        data = market_call(console.market.bars, sym, period, interval)
         pos = next((p for p in store.book()["open"] if p["symbol"] == sym), None)
         stop = float(store.settings()["stop_loss_pct"])
         return {
@@ -129,9 +133,15 @@ def create_app(console: Console) -> FastAPI:
             "currency": rules.currency_for(sym),
             "bars": data,
             "orders": store.orders(limit=500, symbol=sym),
-            "position": ({**pos, "stop_price": rules.stop_price(pos["avg_price"], stop)} if pos else None),
+            "interval": interval,
+            "position": ({**pos, "stop_price": rules.exit_price(pos["avg_price"], stop, pos.get("stop"))}
+                         if pos else None),
             "stop_loss_pct": stop,
         }
+
+    @app.get("/api/setup/{symbol}")
+    def setup(symbol: str):
+        return market_call(console.setup, clean_symbol(symbol))
 
     @app.get("/api/watchlists/{wid}/performance")
     def performance(wid: int):
