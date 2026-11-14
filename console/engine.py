@@ -25,7 +25,7 @@ from . import rules, volume_profile as vp
 from .broker import get_broker
 from .market import MarketDataError, YahooMarket
 from .progress import Progress
-from .store import Store
+from .store import CLAUDE_CODE, Store
 
 log = logging.getLogger("console")
 
@@ -290,6 +290,8 @@ class Console:
             self.store.update_analysis(aid, status="cancelled", finished=time.time(),
                                        error="Cancelled before it started.")
             self.store.add_event("analysis", f"Cancelled the queued analysis of {a['symbol']}.", a["symbol"])
+        elif a["status"] == "running" and (a.get("stats") or {}).get("provider") == CLAUDE_CODE:
+            raise Conflict("This analysis is running in Claude Code; stop it there.")
         elif a["status"] == "running":
             self._cancel.add(aid)   # takes effect when the next agent finishes
         else:
@@ -345,28 +347,7 @@ class Console:
         self._propose(aid, a["symbol"], out.get("rating"), out.get("summary") or "", held)
 
     def _propose(self, aid: int, symbol: str, rating: str | None, summary: str, held: dict | None) -> int | None:
-        held_qty = held["qty"] if held else 0.0
-        side = rules.proposal_side(rating, held_qty)
-        if side is None:
-            self.store.add_event("analysis", f"{symbol}: rated {rating}. No trade proposed.", symbol)
-            return None
-        price = self._price(symbol)
-        if price is None:
-            return None
-        cur = rules.currency_for(symbol)
-        if side == "SELL":
-            qty = held_qty
-        else:
-            budget = float(self.store.settings()["trade_budget"].get(cur, 0))
-            qty = rules.size_order(budget, price)
-            if qty <= 0:
-                self.store.add_event("analysis", f"{symbol}: rated {rating}, but the {cur} trade budget "
-                                     f"buys no shares at {price:,.2f}.", symbol)
-                return None
-        note = _first_line(summary) or f"Agents rated {symbol} {rating}."
-        pid = self.store.create_proposal(aid, symbol, side, qty, price, cur, rating, note)
-        self.store.add_event("proposal", f"{side} {qty:g} {symbol} proposed (rated {rating}).", symbol)
-        return pid
+        return propose_from_rating(self.store, self._price, aid, symbol, rating, summary, held)
 
     # ---------- monitor ----------
     def start_monitor(self, tick: float = 60.0) -> None:
@@ -398,3 +379,33 @@ class Console:
             except Exception as exc:
                 log.exception("monitor tick failed")
                 self.store.add_event("error", f"Background check failed: {exc}"[:300])
+
+
+def propose_from_rating(store: Store, price_of: Callable[[str], float | None], aid: int | None, symbol: str,
+                        rating: str | None, summary: str, held: dict | None) -> int | None:
+    """Turn an agent rating into a proposal awaiting approval, or note why not.
+
+    Shared by the console's own runs and the Claude Code harness.
+    """
+    held_qty = held["qty"] if held else 0.0
+    side = rules.proposal_side(rating, held_qty)
+    if side is None:
+        store.add_event("analysis", f"{symbol}: rated {rating}. No trade proposed.", symbol)
+        return None
+    price = price_of(symbol)
+    if price is None:
+        return None
+    cur = rules.currency_for(symbol)
+    if side == "SELL":
+        qty = held_qty
+    else:
+        budget = float(store.settings()["trade_budget"].get(cur, 0))
+        qty = rules.size_order(budget, price)
+        if qty <= 0:
+            store.add_event("analysis", f"{symbol}: rated {rating}, but the {cur} trade budget "
+                            f"buys no shares at {price:,.2f}.", symbol)
+            return None
+    note = _first_line(summary) or f"Agents rated {symbol} {rating}."
+    pid = store.create_proposal(aid, symbol, side, qty, price, cur, rating, note)
+    store.add_event("proposal", f"{side} {qty:g} {symbol} proposed (rated {rating}).", symbol)
+    return pid

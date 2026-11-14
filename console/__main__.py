@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import threading
 import webbrowser
-from pathlib import Path
 
 
 def main() -> None:
@@ -27,12 +25,12 @@ def main() -> None:
 
     from .engine import Console
     from .server import create_app
-    from .store import Store
+    from .store import Store, default_db_path
 
     # One line per agent step from the console; libraries only report problems.
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("console").setLevel(logging.INFO)
-    db = args.db or os.path.join(Path.home(), ".tradingagents", "console.db")
+    db = args.db or default_db_path()
     console = Console(Store(db))
     console.start_monitor()
     app = create_app(console)

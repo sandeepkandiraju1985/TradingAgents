@@ -39,6 +39,28 @@ so its POC approximates what charting tools compute from trade-by-trade data.
 **Dry-run only.** Nothing is sent to INDmoney or any other broker. The console
 has no live order path, and live trading cannot be switched on from it.
 
+## Run the agents with Claude (no API key)
+
+Instead of Gemini, Claude can play the whole TradingAgents team from Claude Code
+(the Claude desktop app's Code tab, or the `claude` command), using your Claude
+plan. Open this project folder in Claude Code, then type:
+
+```
+/analyze TCS.NS
+```
+
+Claude runs the analysts in parallel, then the bull vs bear debate, the research
+manager, the trader, the risk debate and the portfolio manager, each as its own
+sub-agent (`.claude/agents/ta-*.md`, orchestrated by `.claude/skills/analyze`).
+Data comes from the same free sources (Yahoo Finance, SEC, StockTwits, Reddit),
+never dated after the analysis date. Variations: `/analyze Infosys quick`
+(market and news analysts only), `/analyze NVDA on 2026-11-10`.
+
+The run shows live in the console's Agent view, and a Buy or Sell lands in
+Approvals as a dry-run proposal. Run folders are kept in
+`%USERPROFILE%\.tradingagents\claude_runs`. The project's virtual environment
+must exist with `pip install .` done, and the computer needs internet access.
+
 ## Requirements
 
 - Python 3.11 or newer (3.13 recommended)

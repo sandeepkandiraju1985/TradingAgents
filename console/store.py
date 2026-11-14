@@ -8,6 +8,7 @@ background monitor all share it, and SQLite serialises writes anyway.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -107,6 +108,12 @@ _ADDED_COLUMNS = [
     ("orders", "stop", "REAL"),
 ]
 _EPS = 1e-9
+CLAUDE_CODE = "claude-code"   # stats["provider"] of runs made by the claude_harness
+
+
+def default_db_path() -> str:
+    """The console's database: TRADINGAGENTS_CONSOLE_DB, else ~/.tradingagents/console.db."""
+    return os.environ.get("TRADINGAGENTS_CONSOLE_DB") or os.path.join(Path.home(), ".tradingagents", "console.db")
 
 
 class Store:
@@ -215,10 +222,14 @@ class Store:
         return [self._an(r) for r in self._all("SELECT * FROM analyses ORDER BY id DESC LIMIT ?", (limit,))]
 
     def fail_interrupted(self) -> int:
-        """Runs left queued or running by a previous session can never finish."""
+        """Runs left queued or running by a previous session can never finish.
+
+        A run in Claude Code (the claude_harness) is not the console's to end: it
+        records itself, whether or not the console is open.
+        """
         cur = self._run("UPDATE analyses SET status = 'failed', error = 'Interrupted: the console was closed "
-                        "before this run finished.', finished = ? WHERE status IN ('queued', 'running')",
-                        (time.time(),))
+                        "before this run finished.', finished = ? WHERE status IN ('queued', 'running') "
+                        "AND (stats IS NULL OR stats NOT LIKE ?)", (time.time(), f'%"provider": "{CLAUDE_CODE}"%'))
         return cur.rowcount
 
     # ---------- proposals ----------
